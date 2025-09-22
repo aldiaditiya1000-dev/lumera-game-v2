@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lumera Flappy Bird - GameFi dApp</title>
+    <meta name="description" content="Play Flappy Bird and earn LUME tokens on Lumera Protocol">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        const LUMERA_CHAIN_CONFIG = {
+            chainId: "lumera-testnet-2",
+            chainName: "Lumera Testnet",
+            rpc: "https://lumera-testnet-rpc.linknode.org/",
+            rest: "https://lumera-testnet-api.linknode.org/",
+            bip44: { coinType: 118 },
+            bech32Config: {
+                bech32PrefixAccAddr: "lumera",
+                bech32PrefixAccPub: "lumerapub",
+                bech32PrefixValAddr: "lumeravaloper",
+                bech32PrefixValPub: "lumeravaloperpub",
+                bech32PrefixConsAddr: "lumeravalcons",
+                bech32PrefixConsPub: "lumeravalconspub"
+            },
+            currencies: [{
+                coinDenom: "LUME",
+                coinMinimalDenom: "ulume",
+                coinDecimals: 6
+            }],
+            feeCurrencies: [{
+                coinDenom: "LUME",
+                coinMinimalDenom: "ulume",
+                coinDecimals: 6
+            }],
+            stakeCurrency: {
+                coinDenom: "LUME",
+                coinMinimalDenom: "ulume",
+                coinDecimals: 6
+            }
+        };
+
+        // Lucide Icons as SVG components
+        const WalletIcon = () => (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/>
+                <path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>
+            </svg>
+        );
+
+        const PlayIcon = () => (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polygon points="5,3 19,12 5,21"/>
+            </svg>
+        );
+
+        const RotateCcwIcon = () => (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="1,4 1,10 7,10"/>
+                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+            </svg>
+        );
+
+        const TrophyIcon = ({ size = 20 }) => (
+            <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/>
+                <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/>
+                <path d="M4 22h16"/>
+                <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/>
+                <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/>
+                <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>
+            </svg>
+        );
+
+        function LumeraFlappyBird() {
+            // Game states
+            const [gameState, setGameState] = useState('menu');
+            const [score, setScore] = useState(0);
+            const [highScore, setHighScore] = useState(0);
+            const [bird, setBird] = useState({ y: 250, velocity: 0 });
+            const [pipes, setPipes] = useState([]);
+            
+            // Wallet states
+            const [wallet, setWallet] = useState(null);
+            const [balance, setBalance] = useState(0);
+            const [rewardAmount, setRewardAmount] = useState(0);
+            const [showReward, setShowReward] = useState(false);
+            const [leaderboard, setLeaderboard] = useState([]);
+            const [showLeaderboard, setShowLeaderboard] = useState(false);
+            
+            // Game refs
+            const gameLoopRef = useRef();
+
+            // Game constants
+            const GRAVITY = 0.6;
+            const JUMP_STRENGTH = -12;
+            const PIPE_WIDTH = 80;
+            const PIPE_GAP = 200;
+            const BIRD_SIZE = 30;
+
+            // Connect to Keplr Wallet
+            const connectWallet = async () => {
+                if (!window.keplr) {
+                    alert("Please install Keplr extension!");
+                    return;
+                }
+
+                try {
+                    await window.keplr.experimentalSuggestChain(LUMERA_CHAIN_CONFIG);
+                    await window.keplr.enable("lumera-testnet-2");
+                    
+                    const offlineSigner = window.keplr.getOfflineSigner("lumera-testnet-2");
+                    const accounts = await offlineSigner.getAccounts();
+                    
+                    if (accounts.length > 0) {
+                        setWallet({
+                            address: accounts[0].address,
+                            name: accounts[0].address.slice(0, 10) + "..."
+                        });
+                        await fetchBalance(accounts[0].address);
+                    }
+                } catch (error) {
+                    console.error("Failed to connect wallet:", error);
+                    alert("Failed to connect wallet. Please try again.");
+                }
+            };
+
+            // Fetch wallet balance
+            const fetchBalance = async (address) => {
+                try {
+                    const response = await fetch(
+                        `${LUMERA_CHAIN_CONFIG.rest}/cosmos/bank/v1beta1/balances/${address}/by_denom?denom=ulume`
+                    );
+                    const data = await response.json();
+                    
+                    if (data.balance) {
+                        const lumeBalance = parseInt(data.balance.amount) / 1000000;
+                        setBalance(lumeBalance);
+                    }
+                } catch (error) {
+                    console.error("Failed to fetch balance:", error);
+                    setBalance(0);
+                }
+            };
+
+            // Generate random reward (0.01 - 0.5 LUME)
+            const generateReward = () => {
+                const min = 0.01;
+                const max = 0.5;
+                const reward = Math.random() * (max - min) + min;
+                return Math.round(reward * 100) / 100;
+            };
+
+            // Award tokens (simulated)
+            const awardTokens = async () => {
+                const reward = generateReward();
+                setRewardAmount(reward);
+                setShowReward(true);
+                setBalance(prev => prev + reward);
+                
+                setTimeout(() => {
+                    setShowReward(false);
+                }, 3000);
+            };
+
+            // Initialize pipes with dynamic gap
+            const createPipe = (x, customGap = null) => ({
+                x,
+                topHeight: Math.random() * 200 + 50,
+                gap: customGap || PIPE_GAP,
+                passed: false
+            });
+
+            // Reset game
+            const resetGame = () => {
+                setBird({ y: 250, velocity: 0 });
+                setPipes([createPipe(800), createPipe(1200)]);
+                setScore(0);
+            };
+
+            // Start game
+            const startGame = () => {
+                resetGame();
+                setGameState('playing');
+            };
+
+            // Jump function
+            const jump = useCallback(() => {
+                if (gameState === 'playing') {
+                    setBird(prev => ({ ...prev, velocity: JUMP_STRENGTH }));
+                }
+            }, [gameState]);
+
+            // Game over
+            const gameOver = async () => {
+                setGameState('gameOver');
+                if (score > highScore) {
+                    setHighScore(score);
+                }
+                
+                if (wallet && score > 0) {
+                    setLeaderboard(prev => {
+                        const newEntry = { address: wallet.address, score, timestamp: Date.now() };
+                        const updated = [...prev, newEntry].sort((a, b) => b.score - a.score).slice(0, 10);
+                        return updated;
+                    });
+                    await awardTokens();
+                }
+            };
+
+            // Collision detection
+            const checkCollision = (bird, pipes) => {
+                if (bird.y > 550 || bird.y < 0) return true;
+                
+                for (let pipe of pipes) {
+                    const pipeGap = pipe.gap || PIPE_GAP;
+                    if (
+                        bird.y < pipe.topHeight ||
+                        bird.y > pipe.topHeight + pipeGap - BIRD_SIZE
+                    ) {
+                        if (pipe.x < 150 && pipe.x + PIPE_WIDTH > 100) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            };
+
+            // Game loop with progressive difficulty
+            useEffect(() => {
+                if (gameState === 'playing') {
+                    gameLoopRef.current = setInterval(() => {
+                        setBird(prev => ({
+                            y: prev.y + prev.velocity,
+                            velocity: prev.velocity + GRAVITY
+                        }));
+
+                        setPipes(prev => {
+                            let newScore = score;
+                            const gameSpeed = 3 + Math.floor(score / 5) * 0.5;
+                            
+                            const updated = prev.map(pipe => {
+                                const newPipe = { ...pipe, x: pipe.x - gameSpeed };
+                                if (!pipe.passed && newPipe.x < 100) {
+                                    newPipe.passed = true;
+                                    newScore++;
+                                }
+                                return newPipe;
+                            });
+
+                            const baseGap = PIPE_GAP;
+                            const minGap = 150;
+                            const currentGap = Math.max(minGap, baseGap - Math.floor(score / 10) * 10);
+                            
+                            if (updated.length === 0 || updated[updated.length - 1].x < 400) {
+                                const newPipe = createPipe(800);
+                                updated.push({
+                                    ...newPipe,
+                                    gap: currentGap
+                                });
+                            }
+
+                            const filtered = updated.filter(pipe => pipe.x > -PIPE_WIDTH);
+                            
+                            if (newScore !== score) {
+                                setScore(newScore);
+                            }
+                            
+                            return filtered;
+                        });
+                    }, 20);
+                }
+
+                return () => {
+                    if (gameLoopRef.current) {
+                        clearInterval(gameLoopRef.current);
+                    }
+                };
+            }, [gameState, score]);
+
+            // Check collisions
+            useEffect(() => {
+                if (gameState === 'playing' && checkCollision(bird, pipes)) {
+                    gameOver();
+                }
+            }, [bird, pipes, gameState]);
+
+            // Keyboard controls
+            useEffect(() => {
+                const handleKeyPress = (e) => {
+                    if (e.code === 'Space') {
+                        e.preventDefault();
+                        jump();
+                    }
+                };
+
+                const handleClick = () => {
+                    jump();
+                };
+
+                window.addEventListener('keydown', handleKeyPress);
+                window.addEventListener('click', handleClick);
+                return () => {
+                    window.removeEventListener('keydown', handleKeyPress);
+                    window.removeEventListener('click', handleClick);
+                };
+            }, [jump]);
+
+            return (
+                <div className="min-h-screen bg-gradient-to-b from-cyan-400 to-blue-500 flex flex-col items-center">
+                    {/* Header */}
+                    <div className="w-full max-w-6xl p-4 flex justify-between items-center">
+                        <div className="flex items-center space-x-2">
+                            <div className="w-8 h-8 bg-purple-600 rounded-full flex items-center justify-center">
+                                <span className="text-white font-bold text-sm">L</span>
+                            </div>
+                            <h1 className="text-2xl font-bold text-white">Lumera Flappy Bird</h1>
+                        </div>
+                        
+                        <div className="flex items-center space-x-4">
+                            {wallet ? (
+                                <div className="bg-white/20 rounded-lg p-2 text-white">
+                                    <div className="text-sm">{wallet.name}</div>
+                                    <div className="font-bold">{balance.toFixed(2)} LUME</div>
+                                </div>
+                            ) : (
+                                <button
+                                    onClick={connectWallet}
+                                    className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg flex items-center space-x-2 transition-colors"
+                                >
+                                    <WalletIcon />
+                                    <span>Connect Wallet</span>
+                                </button>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Game Area */}
+                    <div className="relative w-full max-w-4xl h-96 bg-gradient-to-b from-cyan-300 to-green-400 border-4 border-white rounded-lg overflow-hidden">
+                        {/* Game Canvas */}
+                        <div className="relative w-full h-full">
+                            {/* Bird */}
+                            <div
+                                className="absolute w-8 h-8 bg-yellow-400 border-2 border-yellow-600 rounded-full transition-all duration-75"
+                                style={{
+                                    left: '100px',
+                                    top: `${bird.y}px`,
+                                    transform: `rotate(${Math.min(bird.velocity * 3, 90)}deg)`
+                                }}
+                            />
+                            
+                            {/* Pipes */}
+                            {pipes.map((pipe, index) => (
+                                <div key={index}>
+                                    {/* Top pipe */}
+                                    <div
+                                        className="absolute bg-green-600 border-2 border-green-800"
+                                        style={{
+                                            left: `${pipe.x}px`,
+                                            top: '0px',
+                                            width: `${PIPE_WIDTH}px`,
+                                            height: `${pipe.topHeight}px`
+                                        }}
+                                    />
+                                    {/* Bottom pipe */}
+                                    <div
+                                        className="absolute bg-green-600 border-2 border-green-800"
+                                        style={{
+                                            left: `${pipe.x}px`,
+                                            top: `${pipe.topHeight + (pipe.gap || PIPE_GAP)}px`,
+                                            width: `${PIPE_WIDTH}px`,
+                                            height: `${400 - pipe.topHeight - (pipe.gap || PIPE_GAP)}px`
+                                        }}
+                                    />
+                                </div>
+                            ))}
+                            
+                            {/* Ground */}
+                            <div className="absolute bottom-0 w-full h-16 bg-amber-600 border-t-4 border-amber-800" />
+                        </div>
+
+                        {/* Game UI Overlays */}
+                        {gameState === 'menu' && (
+                            <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center space-y-4">
+                                <h2 className="text-4xl font-bold text-white mb-4">Lumera Flappy Bird</h2>
+                                <p className="text-white text-center max-w-md">
+                                    Fly through pipes and earn LUME tokens! Connect your wallet to start earning.
+                                </p>
+                                <button
+                                    onClick={startGame}
+                                    disabled={!wallet}
+                                    className={`flex items-center space-x-2 px-6 py-3 rounded-lg font-bold text-lg transition-colors ${
+                                        wallet 
+                                            ? 'bg-green-500 hover:bg-green-600 text-white' 
+                                            : 'bg-gray-400 text-gray-600 cursor-not-allowed'
+                                    }`}
+                                >
+                                    <PlayIcon />
+                                    <span>Start Game</span>
+                                </button>
+                                {!wallet && (
+                                    <p className="text-yellow-300 text-sm">Connect wallet first to earn tokens!</p>
+                                )}
+                            </div>
+                        )}
+
+                        {gameState === 'gameOver' && (
+                            <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center space-y-4">
+                                <h2 className="text-3xl font-bold text-white">Game Over!</h2>
+                                <div className="text-white text-center">
+                                    <p className="text-xl">Score: {score}</p>
+                                    <p className="text-lg">High Score: {highScore}</p>
+                                </div>
+                                <div className="flex space-x-3">
+                                    <button
+                                        onClick={startGame}
+                                        className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg flex items-center space-x-2 transition-colors"
+                                    >
+                                        <RotateCcwIcon />
+                                        <span>Play Again</span>
+                                    </button>
+                                    <button
+                                        onClick={() => setShowLeaderboard(true)}
+                                        className="bg-purple-500 hover:bg-purple-600 text-white px-4 py-2 rounded-lg flex items-center space-x-2 transition-colors"
+                                    >
+                                        <TrophyIcon />
+                                        <span>Leaderboard</span>
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Score Display */}
+                        {gameState === 'playing' && (
+                            <div className="absolute top-4 left-4 bg-white/20 rounded-lg p-2">
+                                <div className="text-white font-bold text-xl">Score: {score}</div>
+                                <div className="text-white/80 text-sm">
+                                    Speed: {(3 + Math.floor(score / 5) * 0.5).toFixed(1)}x
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Controls Info */}
+                    <div className="mt-4 text-white text-center">
+                        <p>Press SPACEBAR or click anywhere to jump!</p>
+                        <p className="text-sm opacity-75">Earn 0.01-0.5 LUME tokens for each game!</p>
+                    </div>
+
+                    {/* Reward Notification */}
+                    {showReward && (
+                        <div className="fixed top-20 right-4 bg-green-500 text-white p-4 rounded-lg shadow-lg border-2 border-green-300 animate-pulse">
+                            <div className="flex items-center space-x-2">
+                                <div className="w-6 h-6 bg-yellow-400 rounded-full"></div>
+                                <div>
+                                    <p className="font-bold">Reward Earned!</p>
+                                    <p>+{rewardAmount} LUME tokens</p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Leaderboard Modal */}
+                    {showLeaderboard && (
+                        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+                            <div className="bg-white rounded-lg p-6 max-w-md w-full">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h3 className="text-xl font-bold flex items-center space-x-2">
+                                        <TrophyIcon size={24} />
+                                        <span>Leaderboard</span>
+                                    </h3>
+                                    <button
+                                        onClick={() => setShowLeaderboard(false)}
+                                        className="text-gray-500 hover:text-gray-700"
+                                    >
+                                        ✕
+                                    </button>
+                                </div>
+                                
+                                <div className="space-y-2">
+                                    {leaderboard.length > 0 ? (
+                                        leaderboard.map((entry, index) => (
+                                            <div key={index} className="flex justify-between items-center p-2 bg-gray-100 rounded">
+                                                <div className="flex items-center space-x-2">
+                                                    <span className="font-bold text-lg">#{index + 1}</span>
+                                                    <span className="text-sm">{entry.address.slice(0, 8)}...</span>
+                                                </div>
+                                                <span className="font-bold">{entry.score}</span>
+                                            </div>
+                                        ))
+                                    ) : (
+                                        <p className="text-gray-500 text-center py-4">No scores yet. Be the first!</p>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Footer */}
+                    <div className="mt-8 text-white/75 text-center text-sm">
+                        <p>Powered by Lumera Protocol • Earn LUME while you play!</p>
+                        <p>Need test tokens? Visit the <a href="https://faucet-lumera.winnode.xyz/" target="_blank" rel="noopener noreferrer" className="underline">Lumera Faucet</a></p>
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<LumeraFlappyBird />, document.getElementById('root'));
+    </script>
+</body>
+</html>
